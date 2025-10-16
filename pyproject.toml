@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "distribuicao-contratos"
+version = "0.1.0"
+description = "Distribuicao de contratos com regras de concentracao, fidelizacao e meritocracia"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{name = "Equipe distribuicao"}]
+dependencies = [
+    "pyspark>=3.5.0",
+    "pandas>=1.5",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
