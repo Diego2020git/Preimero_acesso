@@ -104,6 +104,7 @@ def main() -> None:
             contratos,
             legado,
             depara,
+            params=params,
             params_dict=params.__dict__,
         )
 

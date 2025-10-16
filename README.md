@@ -49,6 +49,7 @@ resultado, auditoria, resumo, pendentes, grupos_sem_depara, nao_concentrados, ex
     bases["df_contratos"],
     bases["df_legado"],
     bases["df_depara"],
+    params=DistribuicaoParams(tolerancia_pp=0.1),
     params=DistribuicaoParams(tolerancia_pp=0.1).__dict__,
 )
 ```
