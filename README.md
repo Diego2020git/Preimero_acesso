@@ -7,11 +7,14 @@ Este repositório contém o algoritmo de distribuição de contratos por escrit�
 - Python 3.10+
 - Java Runtime (necessário para executar o PySpark)
 
+Instale as dependências em um ambiente virtual e registre o projeto como pacote
+local (garante que `import distribuicao_contratos` funcione em qualquer diretório):
 Instale as dependências em um ambiente virtual:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # No Windows use: .venv\\Scripts\\activate
+pip install -e .[dev]
 pip install -r requirements.txt
 ```
 
@@ -25,6 +28,45 @@ python scripts/exemplo.py
 ```
 
 As tabelas são exibidas no console por meio de `show()` e podem ser adaptadas para gravação em arquivos/parquet conforme a necessidade.
+
+> Dica: se o ambiente corporativo não permitir `pip install -e .`, utilize `pip install -r requirements.txt` e adicione o diretório `src`
+> ao `PYTHONPATH` manualmente (`export PYTHONPATH=$(pwd)/src:$PYTHONPATH`).
+
+Para uso programático, importe a função principal diretamente:
+
+```python
+from pyspark.sql import SparkSession
+from distribuicao_contratos import (
+    DistribuicaoParams,
+    carregar_bases_workspace,
+    distribuir_contratos,
+)
+
+spark = SparkSession.builder.getOrCreate()
+bases = carregar_bases_workspace(spark)
+
+resultado, auditoria, resumo, pendentes, grupos_sem_depara, nao_concentrados, export = distribuir_contratos(
+    bases["df_contratos"],
+    bases["df_legado"],
+    bases["df_depara"],
+    params=DistribuicaoParams(tolerancia_pp=0.1).__dict__,
+)
+```
+
+O helper `carregar_bases_workspace` aplica as mesmas conversões sugeridas pela
+equipe (datas com `pd.to_datetime`, percentuais como `float` e criação dos
+DataFrames Spark) para os arquivos localizados em `/Workspace`:
+
+| Arquivo Excel                           | Finalidade                                     |
+| -------------------------------------- | ---------------------------------------------- |
+| `base_contratos_distribuir.xlsx`       | Base de contratos a distribuir                 |
+| `Base_legado_passado.xlsx`             | Histórico de concentração                      |
+| `Depara_escri_aten_rastreador.xlsx`    | Escritórios aptos por Carteira/Região          |
+| `Depara_rastreador.xlsx`               | Percentuais alvo para contratos com rastreador |
+| `depara_sem_rastreador.xlsx`           | Percentuais alvo para contratos sem rastreador |
+
+Caso os arquivos estejam em outro diretório, basta informar `workspace_dir`
+no helper (`carregar_bases_workspace(spark, workspace_dir="/caminho" )`).
 
 Para uso programático, importe a função principal diretamente:
 

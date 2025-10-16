@@ -1,7 +1,16 @@
+from pathlib import Path
+import sys
+
 import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+SRC_DIR = ROOT_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from distribuicao_contratos import DistribuicaoParams, distribuir_contratos
 
