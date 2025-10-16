@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Tuple, Union
+from typing import Dict, Iterable, Optional, Tuple
 
 import pandas as pd
 from pyspark.sql import DataFrame, Window
@@ -568,6 +569,14 @@ def distribuir_contratos(
 
     contratos, legado, depara = normalizar_entradas(df_contratos, df_legado, df_depara_escritorios)
     capacidade = calcular_capacidades(contratos, depara, params_obj)
+    params_dict: Optional[Dict[str, object]] = None,
+) -> Tuple[DataFrame, DataFrame, DataFrame, DataFrame, DataFrame, DataFrame, DataFrame]:
+    """Aplica todo o fluxo de distribuicao e retorna as tabelas oficiais."""
+
+    params = DistribuicaoParams(**(params_dict or {}))
+
+    contratos, legado, depara = normalizar_entradas(df_contratos, df_legado, df_depara_escritorios)
+    capacidade = calcular_capacidades(contratos, depara, params)
 
     candidatos_conc, motivos_conc = gerar_candidatos_concentracao(contratos, legado, depara)
 
@@ -684,6 +693,7 @@ def distribuir_contratos(
     data_execucao = F.current_timestamp()
     resultado = resultado.withColumn("data_processamento", data_execucao)
     resultado = resultado.withColumn("algoritmo_versao", F.lit(params_obj.algoritmo_versao))
+    resultado = resultado.withColumn("algoritmo_versao", F.lit(params.algoritmo_versao))
 
     # Auditoria detalhada
     auditoria_colunas_fixas = [
@@ -713,6 +723,7 @@ def distribuir_contratos(
     motivos_conc_enriquecidos = motivos_conc.withColumn("data_processamento", data_execucao)
     motivos_conc_enriquecidos = motivos_conc_enriquecidos.withColumn(
         "algoritmo_versao", F.lit(params_obj.algoritmo_versao)
+        "algoritmo_versao", F.lit(params.algoritmo_versao)
     )
     auditoria = auditoria.unionByName(motivos_conc_enriquecidos, allowMissingColumns=True)
 
