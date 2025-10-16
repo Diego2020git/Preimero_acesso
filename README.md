@@ -9,11 +9,13 @@ Este repositório contém o algoritmo de distribuição de contratos por escrit�
 
 Instale as dependências em um ambiente virtual e registre o projeto como pacote
 local (garante que `import distribuicao_contratos` funcione em qualquer diretório):
+Instale as dependências em um ambiente virtual:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # No Windows use: .venv\\Scripts\\activate
 pip install -e .[dev]
+pip install -r requirements.txt
 ```
 
 ## Como executar o algoritmo
@@ -65,6 +67,19 @@ DataFrames Spark) para os arquivos localizados em `/Workspace`:
 
 Caso os arquivos estejam em outro diretório, basta informar `workspace_dir`
 no helper (`carregar_bases_workspace(spark, workspace_dir="/caminho" )`).
+
+Para uso programático, importe a função principal diretamente:
+
+```python
+from distribuicao_contratos import distribuir_contratos, DistribuicaoParams
+
+resultado, auditoria, resumo, pendentes, grupos_sem_depara, nao_concentrados, export = distribuir_contratos(
+    df_contratos,
+    df_legado,
+    df_depara,
+    params=DistribuicaoParams(tolerancia_pp=0.1),
+)
+```
 
 ## Como rodar os testes
 
