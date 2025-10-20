@@ -7,6 +7,10 @@ Este repositório contém o algoritmo de distribuição de contratos por escrit�
 - Python 3.10+
 - Java Runtime (necessário para executar o PySpark)
 
+Em ambientes Databricks (ou semelhantes) basta anexar o repositório ao
+workspace e executar o algoritmo diretamente; as dependências mínimas estão
+listadas em `requirements.txt` e podem ser instaladas conforme a política do
+ambiente.
 Instale as dependências em um ambiente virtual e registre o projeto como pacote
 local (garante que `import distribuicao_contratos` funcione em qualquer diretório):
 Instale as dependências em um ambiente virtual:
@@ -29,6 +33,8 @@ python scripts/exemplo.py
 
 As tabelas são exibidas no console por meio de `show()` e podem ser adaptadas para gravação em arquivos/parquet conforme a necessidade.
 
+> Dica: se precisar rodar fora do Databricks, utilize `pip install -r requirements.txt`
+> e aponte o `PYTHONPATH` para `src` (`export PYTHONPATH=$(pwd)/src:$PYTHONPATH`).
 > Dica: se o ambiente corporativo não permitir `pip install -e .`, utilize `pip install -r requirements.txt` e adicione o diretório `src`
 > ao `PYTHONPATH` manualmente (`export PYTHONPATH=$(pwd)/src:$PYTHONPATH`).
 
@@ -50,6 +56,25 @@ resultado, auditoria, resumo, pendentes, grupos_sem_depara, nao_concentrados, ex
     bases["df_legado"],
     bases["df_depara"],
     params=DistribuicaoParams(tolerancia_pp=0.1),
+)
+```
+
+### Execução passo a passo (sem chamar funções auxiliares)
+
+Para quem prefere rodar todo o fluxo em células sequenciais, o script
+`scripts/pipeline_passo_a_passo.py` replica as etapas do algoritmo com todas as
+funções auxiliares definidas no próprio arquivo — não é necessário importar o
+pacote `distribuicao_contratos`. Basta copiar o conteúdo para um notebook do
+Databricks e executar célula a célula.
+
+Se você já tiver carregado os arquivos em DataFrames com os nomes
+`PATH_BASE`, `PATH_LEG`, `PATH_VAL1`, `PATH_PCT1` e `PATH_PCT0` (conforme o
+exemplo inicial compartilhado), o roteiro detecta automaticamente essas
+variáveis e as reutiliza, evitando uma nova leitura dos Excel. A camada de
+concentração foi ajustada para respeitar a cota disponível em cada combinação
+Carteira/Região, garantindo que nenhum escritório ultrapasse o limite definido
+nas planilhas de percentual.
+
     params=DistribuicaoParams(tolerancia_pp=0.1).__dict__,
 )
 ```

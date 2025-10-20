@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import re
+import unicodedata
+from typing import Dict, Iterable, Optional, Tuple, Union
 from typing import Dict, Iterable, Optional, Tuple, Union
 from typing import Dict, Iterable, Optional, Tuple
 
@@ -171,6 +174,47 @@ def _normalize_boolean(df: DataFrame, column: str) -> DataFrame:
     return df.withColumn(column, normalized)
 
 
+def _slugify(text: str) -> str:
+    """Cria chave simplificada para identificar colunas equivalentes."""
+
+    normalized = unicodedata.normalize("NFKD", text)
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = normalized.lower()
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized)
+    return normalized.strip("_")
+
+
+def _padronizar_colunas(df: DataFrame, mapa: Dict[str, Iterable[str]]) -> DataFrame:
+    """Renomeia colunas variantes para o padrao oficial usando chaves flexiveis."""
+
+    resultado = df
+    slug_para_nome = {_slugify(col): col for col in resultado.columns}
+
+    for destino, chaves in mapa.items():
+        if destino in resultado.columns:
+            continue
+        for chave in chaves:
+            if chave in slug_para_nome:
+                origem = slug_para_nome[chave]
+                resultado = resultado.withColumnRenamed(origem, destino)
+                slug_para_nome = {_slugify(col): col for col in resultado.columns}
+                break
+
+    return resultado
+
+
+def _trim_string_columns(df: DataFrame, colunas: Iterable[str]) -> DataFrame:
+    """Remove espacos excedentes das colunas string utilizadas como chaves."""
+
+    tipos = {campo.name: campo.dataType for campo in df.schema}
+    resultado = df
+    for coluna in colunas:
+        tipo = tipos.get(coluna)
+        if isinstance(tipo, T.StringType):
+            resultado = resultado.withColumn(coluna, F.trim(F.col(coluna)))
+    return resultado
+
+
 def normalizar_entradas(
     df_contratos: DataFrame,
     df_legado: DataFrame,
@@ -178,6 +222,46 @@ def normalizar_entradas(
 ) -> Tuple[DataFrame, DataFrame, DataFrame]:
     """Padroniza colunas essenciais para todo o fluxo."""
 
+    mapa_contratos = {
+        "CPF": {"cpf"},
+        "Numero_de_contrato": {
+            "numero_de_contrato",
+            "numero_do_contrato",
+            "numero_contrato",
+            "numero_de_casos",
+            "numero_do_caso",
+        },
+        "Carteira": {"carteira"},
+        "Regiao": {"regiao"},
+        "Flag_rastreador": {"flag_rastreador", "flag", "flagrastreador"},
+        "Escritorio_origem_cod": {"escritorio_origem_cod", "cod_escritorio_origem"},
+        "Escritorio_origem": {"escritorio_origem", "escritorio_origem_nome"},
+        "COD_escritorio": {"cod_escritorio", "codigo_escritorio"},
+        "Escritorio": {"escritorio", "nome_escritorio"},
+    }
+    mapa_legado = {
+        "CPF": {"cpf"},
+        "Escritorio_legado_cod": {"escritorio_legado_cod", "cod_escritorio_legado"},
+        "Escritorio_legado": {"escritorio_legado", "nome_escritorio_legado"},
+        "Carteira": {"carteira"},
+        "Regiao": {"regiao"},
+    }
+    mapa_depara = {
+        "Escritorio_cod": {"escritorio_cod", "cod_escritorio", "codigo_escritorio"},
+        "Escritorio_nome": {"escritorio_nome", "escritorio"},
+        "Carteira": {"carteira"},
+        "Regiao": {"regiao"},
+        "Atua_na_carteira_regiao": {"atua_na_carteira_regiao", "atua"},
+        "Quota_percentual": {"quota_percentual", "percentual", "meta_percentual"},
+        "Flag_rastreador": {"flag_rastreador", "flag", "flagrastreador"},
+    }
+
+    contratos_brutos = _padronizar_colunas(df_contratos, mapa_contratos)
+    legado_bruto = _padronizar_colunas(df_legado, mapa_legado)
+    depara_bruto = _padronizar_colunas(df_depara_escritorios, mapa_depara)
+
+    contratos = _ensure_columns(
+        contratos_brutos,
     contratos = _ensure_columns(
         df_contratos,
         [
@@ -193,6 +277,44 @@ def normalizar_entradas(
     contratos = contratos.fillna({"Flag_rastreador": 0})
     contratos = contratos.withColumn("Flag_rastreador", F.col("Flag_rastreador").cast("int"))
 
+    # Quando a base nao traz explicitamente o escritorio de origem, utiliza as
+    # colunas operacionais ``COD_escritorio``/``Escritorio`` como fallback para
+    # manter a informacao disponivel na trilha e habilitar a fidelizacao.
+    if "COD_escritorio" in df_contratos.columns:
+        contratos = contratos.withColumn(
+            "Escritorio_origem_cod",
+            F.when(
+                F.col("Escritorio_origem_cod").isNull()
+                | (F.trim(F.col("Escritorio_origem_cod")) == ""),
+                F.col("COD_escritorio").cast("string"),
+            ).otherwise(F.col("Escritorio_origem_cod")),
+        )
+    if "Escritorio" in df_contratos.columns:
+        contratos = contratos.withColumn(
+            "Escritorio_origem",
+            F.when(
+                F.col("Escritorio_origem").isNull()
+                | (F.trim(F.col("Escritorio_origem")) == ""),
+                F.col("Escritorio").cast("string"),
+            ).otherwise(F.col("Escritorio_origem")),
+        )
+
+    contratos = _trim_string_columns(
+        contratos,
+        [
+            "CPF",
+            "Numero_de_contrato",
+            "Carteira",
+            "Regiao",
+            "Escritorio_origem_cod",
+            "Escritorio_origem",
+            "COD_escritorio",
+            "Escritorio",
+        ],
+    )
+
+    legado = _ensure_columns(
+        legado_bruto,
     legado = _ensure_columns(
         df_legado,
         [
@@ -204,6 +326,13 @@ def normalizar_entradas(
         ],
     )
 
+    legado = _trim_string_columns(
+        legado,
+        ["CPF", "Escritorio_legado_cod", "Escritorio_legado", "Carteira", "Regiao"],
+    )
+
+    depara = _ensure_columns(
+        depara_bruto,
     depara = _ensure_columns(
         df_depara_escritorios,
         [
@@ -217,6 +346,21 @@ def normalizar_entradas(
         ],
     )
     depara = _normalize_boolean(depara, "Atua_na_carteira_regiao")
+    # Bases operacionais muitas vezes nao trazem explicitamente a flag de atuacao;
+    # quando a coluna estiver ausente ou completamente nula, assumimos que o
+    # escritorio esta habilitado para receber contratos daquela carteira/regiao.
+    if "Atua_na_carteira_regiao" in depara.columns:
+        depara = depara.withColumn(
+            "Atua_na_carteira_regiao",
+            F.when(F.col("Atua_na_carteira_regiao").isNull(), F.lit(True)).otherwise(
+                F.col("Atua_na_carteira_regiao")
+            ),
+        )
+    depara = _trim_string_columns(
+        depara,
+        ["Escritorio_cod", "Escritorio_nome", "Carteira", "Regiao"],
+    )
+
     depara = depara.fillna({"Quota_percentual": 0.0})
     depara = depara.withColumn("Flag_rastreador", F.col("Flag_rastreador").cast("int"))
 
@@ -257,6 +401,19 @@ def calcular_capacidades(
         F.when(F.col("Quota_percentual") > 1, F.col("Quota_percentual") / 100.0).otherwise(
             F.col("Quota_percentual")
         ),
+    )
+    capacidade = capacidade.fillna({"percentual_meta": 0.0})
+
+    janela = Window.partitionBy("Carteira", "Regiao", "Flag_rastreador")
+    capacidade = capacidade.withColumn(
+        "percentual_meta",
+        F.when(
+            F.sum("percentual_meta").over(janela) <= 0,
+            F.when(
+                F.count("Escritorio_cod").over(janela) > 0,
+                F.lit(1.0) / F.count("Escritorio_cod").over(janela),
+            ).otherwise(F.lit(0.0)),
+        ).otherwise(F.col("percentual_meta")),
     )
 
     capacidade = capacidade.withColumn(
@@ -401,6 +558,110 @@ def gerar_candidatos_concentracao(
     cobertura_escritorio = _cobertura_por_escritorio(relacao_validos)
     ranking = _ranking_escritorios(relacao_validos, cobertura_total, cobertura_escritorio)
 
+    estatisticas_cpf = contratos.groupBy("CPF").agg(
+        F.count("Numero_de_contrato").alias("qtd_contratos")
+    )
+
+    ranking_completo = ranking.filter(F.col("cobre_todas") == F.lit(True))
+
+    legado_unico = legado.select("CPF", "Escritorio_legado_cod").dropDuplicates(["CPF"])
+
+    candidatos_base = (
+        contratos.alias("c")
+        .join(estatisticas_cpf.alias("e"), "CPF", "inner")
+        .join(ranking_completo.alias("r"), "CPF", "inner")
+        .join(legado_unico.alias("l"), "CPF", "left")
+        .select(
+            "c.*",
+            F.col("e.qtd_contratos"),
+            F.col("r.Escritorio_cod").alias("escritorio_candidato"),
+            F.col("r.ordem").alias("ordem_preferencia"),
+            F.col("l.Escritorio_legado_cod").alias("legado_cod"),
+        )
+        .filter(
+            (F.col("qtd_contratos") >= 2)
+            | (
+                (F.col("qtd_contratos") == 1)
+                & F.col("legado_cod").isNotNull()
+                & (F.trim(F.col("legado_cod")) != "")
+            )
+        )
+    )
+
+    candidatos_base = candidatos_base.withColumn(
+        "prioridade_escritorio",
+        F.when(
+            (F.col("legado_cod").isNotNull())
+            & (F.trim(F.col("legado_cod")) != "")
+            & (F.col("legado_cod") == F.col("escritorio_candidato")),
+            F.lit(0),
+        ).otherwise(F.col("ordem_preferencia")),
+    )
+
+    candidatos_base = candidatos_base.withColumn(
+        "sub_regra",
+        F.when(
+            (F.col("qtd_contratos") >= 2)
+            & (F.col("legado_cod") == F.col("escritorio_candidato"))
+            & F.col("legado_cod").isNotNull(),
+            F.lit("Concentracao com legado"),
+        )
+        .when(
+            (F.col("qtd_contratos") == 1)
+            & (F.col("legado_cod") == F.col("escritorio_candidato"))
+            & F.col("legado_cod").isNotNull(),
+            F.lit("Concentracao com legado ativo"),
+        )
+        .otherwise(F.lit("Concentracao")),
+    )
+
+    candidatos_base = candidatos_base.drop("qtd_contratos", "ordem_preferencia", "legado_cod")
+
+    janela_preferencia = Window.partitionBy("CPF", "escritorio_candidato").orderBy("prioridade_escritorio")
+    candidatos_base = candidatos_base.withColumn(
+        "prioridade_escritorio",
+        F.row_number().over(janela_preferencia) + F.col("prioridade_escritorio") - 1,
+    )
+
+    candidatos_base = candidatos_base.dropDuplicates(
+        ["Numero_de_contrato", "escritorio_candidato", "prioridade_escritorio"]
+    )
+
+    cpfs_sem_cobertura = ranking.filter(F.col("cobre_todas") == F.lit(False)).select("CPF").distinct()
+
+    if not _is_dataframe_empty(cpfs_sem_cobertura):
+        janela_grupo = Window.partitionBy("Carteira", "Regiao", "Flag_rastreador").orderBy(
+            F.col("Quota_percentual").desc(),
+            F.col("Escritorio_cod"),
+        )
+        melhor_por_grupo = (
+            relacao_validos.withColumn("ordem_grupo", F.row_number().over(janela_grupo))
+            .filter(F.col("ordem_grupo") == 1)
+            .select(
+                "Carteira",
+                "Regiao",
+                "Flag_rastreador",
+                F.col("Escritorio_cod").alias("escritorio_candidato"),
+            )
+        )
+
+        fallback = (
+            contratos.alias("c")
+            .join(cpfs_sem_cobertura.alias("s"), "CPF", "inner")
+            .join(
+                melhor_por_grupo.alias("m"),
+                ["Carteira", "Regiao", "Flag_rastreador"],
+                "left",
+            )
+            .select("c.*", F.col("m.escritorio_candidato"))
+            .withColumn("prioridade_escritorio", F.lit(999))
+            .withColumn("sub_regra", F.lit("Concentracao fallback por grupo"))
+        )
+
+        candidatos = candidatos_base.unionByName(fallback, allowMissingColumns=True)
+    else:
+        candidatos = candidatos_base
+
     # Legado valido (cobre todas as combinacoes)
     legado_valid = (
         legado.select("CPF", F.col("Escritorio_legado_cod").alias("escritorio_candidato"))
@@ -466,6 +727,12 @@ def gerar_candidatos_concentracao(
 # ---------------------------------------------------------------------------
 
 
+def _is_dataframe_empty(df: DataFrame) -> bool:
+    """Retorna ``True`` quando o DataFrame nao possui linhas."""
+
+    return df.select(F.lit(1)).limit(1).count() == 0
+
+
 def aplicar_candidatos(
     candidatos: DataFrame,
     capacidade: DataFrame,
@@ -473,6 +740,7 @@ def aplicar_candidatos(
 ) -> Tuple[DataFrame, DataFrame, DataFrame]:
     """Materializa candidatos limitados pela capacidade e preservando CPFs."""
 
+    if _is_dataframe_empty(candidatos):
     if candidatos.rdd.isEmpty():
         vazio = candidatos.sparkSession.createDataFrame([], candidatos.schema)
         return vazio, vazio, capacidade
@@ -514,6 +782,7 @@ def aplicar_candidatos(
         "ordem", "dentro_da_quota", "cpf_respeitado", "quota_disponivel"
     )
 
+    if _is_dataframe_empty(aprovados):
     if aprovados.rdd.isEmpty():
         return aprovados, candidatos, capacidade
 
@@ -543,6 +812,147 @@ def aplicar_candidatos(
     return aprovados, rejeitados, capacidade_ajustada
 
 
+def aplicar_candidatos_por_prioridade(
+    candidatos: DataFrame,
+    capacidade: DataFrame,
+    descricao_regra: str,
+) -> Tuple[DataFrame, DataFrame, DataFrame]:
+    """Aplica candidatos em ondas respeitando a prioridade de escritorios."""
+
+    if _is_dataframe_empty(candidatos):
+        vazio = candidatos.sparkSession.createDataFrame([], candidatos.schema)
+        return vazio, vazio, capacidade
+
+    prioridades = [
+        row.prioridade_escritorio
+        for row in candidatos.select("prioridade_escritorio")
+        .distinct()
+        .orderBy("prioridade_escritorio")
+        .collect()
+    ]
+
+    aprovados_total = candidatos.sparkSession.createDataFrame([], candidatos.schema)
+    rejeitados_total = candidatos.sparkSession.createDataFrame([], candidatos.schema)
+    pendentes = candidatos
+    capacidade_atual = capacidade
+
+    for prioridade in prioridades:
+        lote = pendentes.filter(F.col("prioridade_escritorio") == prioridade)
+        aprovados_lote, rejeitados_lote, capacidade_atual = aplicar_candidatos(
+            lote, capacidade_atual, descricao_regra
+        )
+
+        aprovados_total = aprovados_total.unionByName(
+            aprovados_lote, allowMissingColumns=True
+        )
+        rejeitados_total = rejeitados_total.unionByName(
+            rejeitados_lote, allowMissingColumns=True
+        )
+
+        if not _is_dataframe_empty(aprovados_lote):
+            cpfs_atendidos = aprovados_lote.select("CPF").distinct()
+            pendentes = pendentes.join(cpfs_atendidos, "CPF", "left_anti")
+
+        pendentes = pendentes.filter(F.col("prioridade_escritorio") > prioridade)
+
+    if not _is_dataframe_empty(pendentes):
+        rejeitados_total = rejeitados_total.unionByName(
+            pendentes, allowMissingColumns=True
+        )
+
+    return aprovados_total, rejeitados_total, capacidade_atual
+
+
+def _empty_aprovados_like(contratos: DataFrame) -> DataFrame:
+    """Cria DataFrame vazio compatível com o formato esperado pelos aprovados."""
+
+    base = contratos
+    for coluna, tipo in [
+        ("escritorio_candidato", T.StringType()),
+        ("sub_regra", T.StringType()),
+        ("tipo_regra_final", T.StringType()),
+    ]:
+        base = base.withColumn(coluna, F.lit(None).cast(tipo))
+    return base.limit(0)
+
+
+def alocar_meritocracia(
+    contratos_pendentes: DataFrame,
+    depara: DataFrame,
+    capacidade: DataFrame,
+) -> Tuple[DataFrame, DataFrame, DataFrame]:
+    """Distribui contratos remanescentes por meritocracia com fallback ordenado."""
+
+    if _is_dataframe_empty(contratos_pendentes):
+        vazio = _empty_aprovados_like(contratos_pendentes)
+        return vazio, capacidade, contratos_pendentes
+
+    relacao_validos = _escritorios_validos(contratos_pendentes, depara)
+    if _is_dataframe_empty(relacao_validos):
+        vazio = _empty_aprovados_like(contratos_pendentes)
+        return vazio, capacidade, contratos_pendentes
+
+    cobertura_total = _cobertura_total_por_cpf(contratos_pendentes)
+    cobertura_escritorio = _cobertura_por_escritorio(relacao_validos)
+    ranking = _ranking_escritorios(relacao_validos, cobertura_total, cobertura_escritorio)
+    ranking = ranking.filter(F.col("cobre_todas") == F.lit(True))
+
+    if _is_dataframe_empty(ranking):
+        vazio = _empty_aprovados_like(contratos_pendentes)
+        return vazio, capacidade, contratos_pendentes
+
+    candidatos = (
+        contratos_pendentes.alias("c")
+        .join(ranking.alias("r"), "CPF", "inner")
+        .select(
+            "c.*",
+            F.col("r.Escritorio_cod").alias("escritorio_candidato"),
+            F.col("r.ordem").alias("ordem_preferencia"),
+        )
+        .withColumn("sub_regra", F.lit("Meritocracia"))
+        .dropDuplicates(["Numero_de_contrato", "escritorio_candidato", "ordem_preferencia"])
+    )
+
+    preferencias = [
+        row.ordem_preferencia
+        for row in candidatos.select("ordem_preferencia").distinct().orderBy("ordem_preferencia").collect()
+    ]
+
+    aprovados_total = None
+    capacidade_atual = capacidade
+    pendentes_atual = contratos_pendentes
+
+    for pref in preferencias:
+        candidatos_pref = candidatos.filter(F.col("ordem_preferencia") == pref)
+        candidatos_pref = candidatos_pref.join(
+            pendentes_atual.select("Numero_de_contrato").distinct(),
+            "Numero_de_contrato",
+            "inner",
+        )
+
+        aprovados_pref, _, capacidade_atual = aplicar_candidatos(
+            candidatos_pref.drop("ordem_preferencia"), capacidade_atual, "Meritocracia"
+        )
+
+        if not _is_dataframe_empty(aprovados_pref):
+            pendentes_atual = pendentes_atual.join(
+                aprovados_pref.select("Numero_de_contrato").distinct(),
+                "Numero_de_contrato",
+                "left_anti",
+            )
+            aprovados_pref = aprovados_pref.drop("ordem_preferencia", "quota_disponivel")
+            aprovados_total = (
+                aprovados_pref
+                if aprovados_total is None
+                else aprovados_total.unionByName(aprovados_pref, allowMissingColumns=True)
+            )
+
+    if aprovados_total is None:
+        aprovados_total = _empty_aprovados_like(contratos_pendentes)
+
+    return aprovados_total, capacidade_atual, pendentes_atual
+
+
 # ---------------------------------------------------------------------------
 # Pipeline completo
 # ---------------------------------------------------------------------------
@@ -569,6 +979,18 @@ def distribuir_contratos(
 
     contratos, legado, depara = normalizar_entradas(df_contratos, df_legado, df_depara_escritorios)
     capacidade = calcular_capacidades(contratos, depara, params_obj)
+
+    candidatos_concentracao, motivos_conc = gerar_candidatos_concentracao(contratos, legado, depara)
+
+    # 1) Concentracao – prioridade para flag 1
+    candidatos_concentracao_flag1 = candidatos_concentracao.filter(F.col("Flag_rastreador") == 1)
+    aprovados_concentracao_flag1, _, capacidade = aplicar_candidatos_por_prioridade(
+        candidatos_concentracao_flag1, capacidade, "Concentracao"
+    )
+
+    # Mantem CPFs com rastreador para contratos sem rastreador
+    destino_flag1 = aprovados_concentracao_flag1.select("CPF", "escritorio_candidato").distinct()
+    candidatos_ancora_flag0 = (
     params_dict: Optional[Dict[str, object]] = None,
 ) -> Tuple[DataFrame, DataFrame, DataFrame, DataFrame, DataFrame, DataFrame, DataFrame]:
     """Aplica todo o fluxo de distribuicao e retorna as tabelas oficiais."""
@@ -597,6 +1019,30 @@ def distribuir_contratos(
             "Flag_rastreador",
             F.col("escritorio_candidato"),
         )
+        .withColumn("prioridade_escritorio", F.lit(0))
+        .withColumn("sub_regra", F.lit("Concentracao prio escritorio rast"))
+    )
+    aprovados_ancora_flag0, _, capacidade = aplicar_candidatos(
+        candidatos_ancora_flag0, capacidade, "Concentracao"
+    )
+
+    # Demais flag 0 seguem concentracao padrao
+    candidatos_concentracao_flag0 = candidatos_concentracao.filter(F.col("Flag_rastreador") == 0)
+    candidatos_concentracao_flag0 = candidatos_concentracao_flag0.join(
+        aprovados_ancora_flag0.select("Numero_de_contrato").distinct(),
+        "Numero_de_contrato",
+        "left_anti",
+    )
+    aprovados_concentracao_flag0, _, capacidade = aplicar_candidatos_por_prioridade(
+        candidatos_concentracao_flag0, capacidade, "Concentracao"
+    )
+
+    aprovados_concentracao = aprovados_concentracao_flag1.unionByName(
+        aprovados_ancora_flag0, allowMissingColumns=True
+    )
+    aprovados_concentracao = aprovados_concentracao.unionByName(
+        aprovados_concentracao_flag0, allowMissingColumns=True
+    )
         .withColumn("sub_regra", F.lit("Concentracao prio escritorio rast"))
     )
     conc_flag0_prio, rejeitados_flag0_prio, capacidade = aplicar_candidatos(
@@ -655,6 +1101,8 @@ def distribuir_contratos(
     )
 
     # 3) Meritocracia – atribui slots restantes
+    aprovados_merito, capacidade, contratos_pendentes = alocar_meritocracia(
+        contratos_pendentes, depara, capacidade
     candidatos_merito = _escritorios_validos(contratos_pendentes, depara)
     candidatos_merito = candidatos_merito.withColumn("sub_regra", F.lit("Meritocracia"))
     aprovados_merito, rejeitados_merito, capacidade = aplicar_candidatos(
@@ -664,6 +1112,12 @@ def distribuir_contratos(
     resultado = aprovados_concentracao.unionByName(aprovados_fid, allowMissingColumns=True)
     resultado = resultado.unionByName(aprovados_merito, allowMissingColumns=True)
     resultado = resultado.withColumnRenamed("escritorio_candidato", "escritorio_destino_cod")
+
+    # Evita colisoes de nomes antes de anexar as informacoes oficiais do escritorio
+    if "Escritorio_nome" in resultado.columns:
+        resultado = resultado.drop("Escritorio_nome")
+    if "escritorio_destino" in resultado.columns:
+        resultado = resultado.drop("escritorio_destino")
 
     nomes_escritorios = depara.select("Escritorio_cod", "Escritorio_nome").distinct()
     resultado = resultado.join(
