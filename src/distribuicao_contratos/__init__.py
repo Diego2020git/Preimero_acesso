@@ -25,6 +25,8 @@ from dataclasses import dataclass
 import re
 import unicodedata
 from typing import Dict, Iterable, Optional, Tuple, Union
+from typing import Dict, Iterable, Optional, Tuple, Union
+from typing import Dict, Iterable, Optional, Tuple
 
 import pandas as pd
 from pyspark.sql import DataFrame, Window
@@ -260,6 +262,8 @@ def normalizar_entradas(
 
     contratos = _ensure_columns(
         contratos_brutos,
+    contratos = _ensure_columns(
+        df_contratos,
         [
             ("CPF", T.StringType()),
             ("Numero_de_contrato", T.StringType()),
@@ -311,6 +315,8 @@ def normalizar_entradas(
 
     legado = _ensure_columns(
         legado_bruto,
+    legado = _ensure_columns(
+        df_legado,
         [
             ("CPF", T.StringType()),
             ("Escritorio_legado_cod", T.StringType()),
@@ -327,6 +333,8 @@ def normalizar_entradas(
 
     depara = _ensure_columns(
         depara_bruto,
+    depara = _ensure_columns(
+        df_depara_escritorios,
         [
             ("Escritorio_cod", T.StringType()),
             ("Escritorio_nome", T.StringType()),
@@ -654,6 +662,51 @@ def gerar_candidatos_concentracao(
     else:
         candidatos = candidatos_base
 
+    # Legado valido (cobre todas as combinacoes)
+    legado_valid = (
+        legado.select("CPF", F.col("Escritorio_legado_cod").alias("escritorio_candidato"))
+        .join(ranking.filter(F.col("cobre_todas")), "CPF", "inner")
+        .filter(F.col("Escritorio_legado_cod") == F.col("Escritorio_cod"))
+        .select("CPF", "escritorio_candidato")
+        .distinct()
+    )
+
+    estat_cpf = (
+        contratos.groupBy("CPF")
+        .agg(F.count("Numero_de_contrato").alias("qtd_contratos"))
+    )
+
+    # Cpfs multi com legado
+    multi_c_legacy = (
+        contratos.alias("c")
+        .join(estat_cpf.filter(F.col("qtd_contratos") >= 2).alias("m"), "CPF", "inner")
+        .join(legado_valid.alias("l"), "CPF", "inner")
+        .select("c.*", F.col("l.escritorio_candidato"), F.lit("Concentracao com legado").alias("sub_regra"))
+    )
+
+    # Cpfs multi sem legado (melhor escritorio do ranking)
+    multi_sem_legado_cpf = estat_cpf.filter(F.col("qtd_contratos") >= 2).join(legado_valid, "CPF", "left_anti")
+    melhor_escritorio = ranking.filter((F.col("ordem") == 1) & (F.col("cobre_todas")))
+    multi_sem_legado = (
+        contratos.alias("c")
+        .join(multi_sem_legado_cpf.alias("ms"), "CPF", "inner")
+        .join(melhor_escritorio.alias("r"), "CPF", "inner")
+        .select("c.*", F.col("r.Escritorio_cod").alias("escritorio_candidato"), F.lit("Concentracao").alias("sub_regra"))
+    )
+
+    # Cpfs single com legado (mantem legado)
+    single_legado = (
+        contratos.alias("c")
+        .join(estat_cpf.filter(F.col("qtd_contratos") == 1).alias("s"), "CPF", "inner")
+        .join(legado_valid.alias("l"), "CPF", "inner")
+        .select("c.*", F.col("l.escritorio_candidato"), F.lit("Concentracao com legado ativo").alias("sub_regra"))
+    )
+
+    candidatos = multi_c_legacy.unionByName(multi_sem_legado, allowMissingColumns=True)
+    candidatos = candidatos.unionByName(single_legado, allowMissingColumns=True)
+    candidatos = candidatos.dropDuplicates(["Numero_de_contrato", "escritorio_candidato"])
+
+    cpfs_sem_cobertura = ranking.filter(~F.col("cobre_todas")).select("CPF").distinct()
     motivos = (
         contratos.join(cpfs_sem_cobertura, "CPF", "inner")
         .select(
@@ -688,6 +741,7 @@ def aplicar_candidatos(
     """Materializa candidatos limitados pela capacidade e preservando CPFs."""
 
     if _is_dataframe_empty(candidatos):
+    if candidatos.rdd.isEmpty():
         vazio = candidatos.sparkSession.createDataFrame([], candidatos.schema)
         return vazio, vazio, capacidade
 
@@ -729,6 +783,7 @@ def aplicar_candidatos(
     )
 
     if _is_dataframe_empty(aprovados):
+    if aprovados.rdd.isEmpty():
         return aprovados, candidatos, capacidade
 
     consumo = (
@@ -936,6 +991,24 @@ def distribuir_contratos(
     # Mantem CPFs com rastreador para contratos sem rastreador
     destino_flag1 = aprovados_concentracao_flag1.select("CPF", "escritorio_candidato").distinct()
     candidatos_ancora_flag0 = (
+    params_dict: Optional[Dict[str, object]] = None,
+) -> Tuple[DataFrame, DataFrame, DataFrame, DataFrame, DataFrame, DataFrame, DataFrame]:
+    """Aplica todo o fluxo de distribuicao e retorna as tabelas oficiais."""
+
+    params = DistribuicaoParams(**(params_dict or {}))
+
+    contratos, legado, depara = normalizar_entradas(df_contratos, df_legado, df_depara_escritorios)
+    capacidade = calcular_capacidades(contratos, depara, params)
+
+    candidatos_conc, motivos_conc = gerar_candidatos_concentracao(contratos, legado, depara)
+
+    # 1) Concentracao – prioridade para flag 1
+    candidatos_flag1 = candidatos_conc.filter(F.col("Flag_rastreador") == 1)
+    conc_flag1, rejeitados_flag1, capacidade = aplicar_candidatos(candidatos_flag1, capacidade, "Concentracao")
+
+    # Mantem CPFs com rastreador para contratos sem rastreador
+    destino_flag1 = conc_flag1.select("CPF", "escritorio_candidato").distinct()
+    candidatos_flag0_prioridade = (
         contratos.filter(F.col("Flag_rastreador") == 0)
         .join(destino_flag1, "CPF", "inner")
         .select(
@@ -970,6 +1043,25 @@ def distribuir_contratos(
     aprovados_concentracao = aprovados_concentracao.unionByName(
         aprovados_concentracao_flag0, allowMissingColumns=True
     )
+        .withColumn("sub_regra", F.lit("Concentracao prio escritorio rast"))
+    )
+    conc_flag0_prio, rejeitados_flag0_prio, capacidade = aplicar_candidatos(
+        candidatos_flag0_prioridade, capacidade, "Concentracao"
+    )
+
+    # Demais flag 0 seguem concentracao padrao
+    candidatos_flag0_rest = candidatos_conc.filter(F.col("Flag_rastreador") == 0)
+    candidatos_flag0_rest = candidatos_flag0_rest.join(
+        conc_flag0_prio.select("Numero_de_contrato").distinct(),
+        "Numero_de_contrato",
+        "left_anti",
+    )
+    conc_flag0, rejeitados_flag0, capacidade = aplicar_candidatos(
+        candidatos_flag0_rest, capacidade, "Concentracao"
+    )
+
+    aprovados_concentracao = conc_flag1.unionByName(conc_flag0_prio, allowMissingColumns=True)
+    aprovados_concentracao = aprovados_concentracao.unionByName(conc_flag0, allowMissingColumns=True)
 
     contratos_pendentes = contratos.join(
         aprovados_concentracao.select("Numero_de_contrato").distinct(),
@@ -1011,6 +1103,10 @@ def distribuir_contratos(
     # 3) Meritocracia – atribui slots restantes
     aprovados_merito, capacidade, contratos_pendentes = alocar_meritocracia(
         contratos_pendentes, depara, capacidade
+    candidatos_merito = _escritorios_validos(contratos_pendentes, depara)
+    candidatos_merito = candidatos_merito.withColumn("sub_regra", F.lit("Meritocracia"))
+    aprovados_merito, rejeitados_merito, capacidade = aplicar_candidatos(
+        candidatos_merito, capacidade, "Meritocracia"
     )
 
     resultado = aprovados_concentracao.unionByName(aprovados_fid, allowMissingColumns=True)
@@ -1051,6 +1147,7 @@ def distribuir_contratos(
     data_execucao = F.current_timestamp()
     resultado = resultado.withColumn("data_processamento", data_execucao)
     resultado = resultado.withColumn("algoritmo_versao", F.lit(params_obj.algoritmo_versao))
+    resultado = resultado.withColumn("algoritmo_versao", F.lit(params.algoritmo_versao))
 
     # Auditoria detalhada
     auditoria_colunas_fixas = [
@@ -1080,6 +1177,7 @@ def distribuir_contratos(
     motivos_conc_enriquecidos = motivos_conc.withColumn("data_processamento", data_execucao)
     motivos_conc_enriquecidos = motivos_conc_enriquecidos.withColumn(
         "algoritmo_versao", F.lit(params_obj.algoritmo_versao)
+        "algoritmo_versao", F.lit(params.algoritmo_versao)
     )
     auditoria = auditoria.unionByName(motivos_conc_enriquecidos, allowMissingColumns=True)
 

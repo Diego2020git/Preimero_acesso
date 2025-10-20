@@ -118,6 +118,8 @@ def test_concentracao_sem_legado(spark):
         [
             _contrato("111", "C1", "CarA", "Sul", 1, observacao="obs"),
             _contrato("111", "C2", "CarA", "Sul", 1, observacao="obs"),
+            ("111", "C1", "CarA", "Sul", 1, None, None, "obs"),
+            ("111", "C2", "CarA", "Sul", 1, None, None, "obs"),
         ],
         _schema_contratos(),
     )
@@ -134,6 +136,8 @@ def test_concentracao_com_legado(spark):
         [
             _contrato("222", "C3", "CarA", "Sul", 1, observacao="info"),
             _contrato("222", "C4", "CarA", "Sul", 1, observacao="info"),
+            ("222", "C3", "CarA", "Sul", 1, None, None, "info"),
+            ("222", "C4", "CarA", "Sul", 1, None, None, "info"),
         ],
         _schema_contratos(),
     )
@@ -151,6 +155,7 @@ def test_concentracao_com_legado(spark):
 def test_concentracao_legado_single(spark):
     contratos = spark.createDataFrame(
         [_contrato("333", "C5", "CarA", "Sul", 1, observacao="legado")],
+        [("333", "C5", "CarA", "Sul", 1, None, None, "legado")],
         _schema_contratos(),
     )
     legado = spark.createDataFrame(
@@ -169,6 +174,8 @@ def test_prioridade_rastreador(spark):
         [
             _contrato("444", "C6", "CarA", "Sul", 1, observacao="rastro"),
             _contrato("444", "C7", "CarA", "Sul", 0, observacao="sem_rastro"),
+            ("444", "C6", "CarA", "Sul", 1, None, None, "rastro"),
+            ("444", "C7", "CarA", "Sul", 0, None, None, "sem_rastro"),
         ],
         _schema_contratos(),
     )
@@ -186,6 +193,8 @@ def test_concentracao_multiplas_carteiras(spark):
         [
             _contrato("555", "C8", "CarA", "Sul", 0, observacao="multi"),
             _contrato("555", "C9", "CarB", "Norte", 0, observacao="multi"),
+            ("555", "C8", "CarA", "Sul", 0, None, None, "multi"),
+            ("555", "C9", "CarB", "Norte", 0, None, None, "multi"),
         ],
         _schema_contratos(),
     )
@@ -203,6 +212,8 @@ def test_quota_estourada_gera_pendente(spark):
         [
             _contrato("666", "C10", "CarA", "Sul", 1, observacao="lotado"),
             _contrato("666", "C11", "CarA", "Sul", 1, observacao="lotado"),
+            ("666", "C10", "CarA", "Sul", 1, None, None, "lotado"),
+            ("666", "C11", "CarA", "Sul", 1, None, None, "lotado"),
         ],
         _schema_contratos(),
     )
@@ -240,6 +251,7 @@ def test_colunas_extras_preservadas(spark):
                 escritorio="Alpha",
                 observacao="comentario",
             ),
+            ("777", "C12", "CarA", "Sul", 1, "E1", "Alpha", "comentario"),
         ],
         _schema_contratos(),
     )

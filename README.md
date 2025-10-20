@@ -11,6 +11,16 @@ Em ambientes Databricks (ou semelhantes) basta anexar o repositório ao
 workspace e executar o algoritmo diretamente; as dependências mínimas estão
 listadas em `requirements.txt` e podem ser instaladas conforme a política do
 ambiente.
+Instale as dependências em um ambiente virtual e registre o projeto como pacote
+local (garante que `import distribuicao_contratos` funcione em qualquer diretório):
+Instale as dependências em um ambiente virtual:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # No Windows use: .venv\\Scripts\\activate
+pip install -e .[dev]
+pip install -r requirements.txt
+```
 
 ## Como executar o algoritmo
 
@@ -25,6 +35,8 @@ As tabelas são exibidas no console por meio de `show()` e podem ser adaptadas p
 
 > Dica: se precisar rodar fora do Databricks, utilize `pip install -r requirements.txt`
 > e aponte o `PYTHONPATH` para `src` (`export PYTHONPATH=$(pwd)/src:$PYTHONPATH`).
+> Dica: se o ambiente corporativo não permitir `pip install -e .`, utilize `pip install -r requirements.txt` e adicione o diretório `src`
+> ao `PYTHONPATH` manualmente (`export PYTHONPATH=$(pwd)/src:$PYTHONPATH`).
 
 Para uso programático, importe a função principal diretamente:
 
@@ -63,6 +75,10 @@ concentração foi ajustada para respeitar a cota disponível em cada combinaç�
 Carteira/Região, garantindo que nenhum escritório ultrapasse o limite definido
 nas planilhas de percentual.
 
+    params=DistribuicaoParams(tolerancia_pp=0.1).__dict__,
+)
+```
+
 O helper `carregar_bases_workspace` aplica as mesmas conversões sugeridas pela
 equipe (datas com `pd.to_datetime`, percentuais como `float` e criação dos
 DataFrames Spark) para os arquivos localizados em `/Workspace`:
@@ -77,6 +93,19 @@ DataFrames Spark) para os arquivos localizados em `/Workspace`:
 
 Caso os arquivos estejam em outro diretório, basta informar `workspace_dir`
 no helper (`carregar_bases_workspace(spark, workspace_dir="/caminho" )`).
+
+Para uso programático, importe a função principal diretamente:
+
+```python
+from distribuicao_contratos import distribuir_contratos, DistribuicaoParams
+
+resultado, auditoria, resumo, pendentes, grupos_sem_depara, nao_concentrados, export = distribuir_contratos(
+    df_contratos,
+    df_legado,
+    df_depara,
+    params=DistribuicaoParams(tolerancia_pp=0.1),
+)
+```
 
 ## Como rodar os testes
 
